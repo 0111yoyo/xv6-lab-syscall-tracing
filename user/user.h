@@ -1,6 +1,9 @@
 struct stat;
 
 // system calls
+// user/user.h
+int trace(int pid);
+
 int fork(void);
 int exit(int) __attribute__((noreturn));
 int wait(int*);

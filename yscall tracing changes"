@@ -1,0 +1,224 @@
+[1mdiff --git a/.gdbinit b/.gdbinit[m
+[1mnew file mode 100644[m
+[1mindex 0000000..c4a2e41[m
+[1m--- /dev/null[m
+[1m+++ b/.gdbinit[m
+[36m@@ -0,0 +1,6 @@[m
+[32m+[m[32mset confirm off[m
+[32m+[m[32mset architecture riscv:rv64[m
+[32m+[m[32mtarget remote 127.0.0.1:26000[m
+[32m+[m[32msymbol-file kernel/kernel[m
+[32m+[m[32mset disassemble-next-line auto[m
+[32m+[m[32mset riscv use-compressed-breakpoints yes[m
+[1mdiff --git a/Makefile b/Makefile[m
+[1mindex 184eec4..12c4976 100644[m
+[1m--- a/Makefile[m
+[1m+++ b/Makefile[m
+[36m@@ -139,6 +139,9 @@[m [mUPROGS=\[m
+ 	$U/_grind\[m
+ 	$U/_wc\[m
+ 	$U/_zombie\[m
+[32m+[m	[32m$U/_find\[m
+[32m+[m	[32m$U/_strace\[m
+[32m+[m
+ [m
+ [m
+ [m
+[1mdiff --git a/kernel/console.c b/kernel/console.c[m
+[1mindex 879839a..d9ceaa0 100644[m
+[1m--- a/kernel/console.c[m
+[1m+++ b/kernel/console.c[m
+[36m@@ -9,6 +9,7 @@[m
+ //   control-p -- print process list[m
+ //[m
+ [m
+[32m+[m
+ #include <stdarg.h>[m
+ [m
+ #include "types.h"[m
+[36m@@ -59,7 +60,10 @@[m [mint[m
+ consolewrite(int user_src, uint64 src, int n)[m
+ {[m
+   int i;[m
+[31m-[m
+[32m+[m[32m  struct proc *p = myproc();[m
+[32m+[m[32m  if (p && p->traced) {[m
+[32m+[m[32m    return n;[m[41m  [m
+[32m+[m[32m  }[m
+ [m
+   for(i = 0; i < n; i++){[m
+     char c;[m
+[1mdiff --git a/kernel/defs.h b/kernel/defs.h[m
+[1mindex 7e683a8..9ee1470 100644[m
+[1m--- a/kernel/defs.h[m
+[1m+++ b/kernel/defs.h[m
+[36m@@ -106,7 +106,7 @@[m [mvoid            yield(void);[m
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);[m
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);[m
+ void            procdump(void);[m
+[31m-[m
+[32m+[m[32mstruct proc* find_proc_by_pid(int pid);[m
+ [m
+ // swtch.S[m
+ void            swtch(struct context*, struct context*);[m
+[36m@@ -141,6 +141,8 @@[m [mvoid            argaddr(int, uint64 *);[m
+ int             fetchstr(uint64, char*, int);[m
+ int             fetchaddr(uint64, uint64*);[m
+ void            syscall();[m
+[32m+[m[32m// kernel/defs.h[m
+[32m+[m[32muint64 sys_trace(void);[m
+ [m
+ // trap.c[m
+ extern uint     ticks;[m
+[1mdiff --git a/kernel/proc.c b/kernel/proc.c[m
+[1mindex 2fc44d9..3d799f5 100644[m
+[1m--- a/kernel/proc.c[m
+[1m+++ b/kernel/proc.c[m
+[36m@@ -149,6 +149,23 @@[m [mfound:[m
+   return p;[m
+ }[m
+ [m
+[32m+[m[32m// kernel/proc.c[m
+[32m+[m[32mstruct proc*[m
+[32m+[m[32mfind_proc_by_pid(int pid)[m
+[32m+[m[32m{[m
+[32m+[m[32m  struct proc *p;[m
+[32m+[m[32m  for(p = proc; p < &proc[NPROC]; p++){[m
+[32m+[m[32m    acquire(&p->lock);[m
+[32m+[m[32m    if(p->pid == pid && p->state != UNUSED){[m
+[32m+[m[32m      release(&p->lock);[m
+[32m+[m[32m      return p;                 // 回傳指標（未上鎖；呼叫者再自行上鎖）[m
+[32m+[m[32m    }[m
+[32m+[m[32m    release(&p->lock);[m
+[32m+[m[32m  }[m
+[32m+[m[32m  return 0;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m
+ // free a proc structure and the data hanging from it,[m
+ // including user pages.[m
+ // p->lock must be held.[m
+[1mdiff --git a/kernel/proc.h b/kernel/proc.h[m
+[1mindex d021857..df19587 100644[m
+[1m--- a/kernel/proc.h[m
+[1m+++ b/kernel/proc.h[m
+[36m@@ -84,7 +84,7 @@[m [menum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };[m
+ // Per-process state[m
+ struct proc {[m
+   struct spinlock lock;[m
+[31m-[m
+[32m+[m[32m  int traced;[m
+   // p->lock must be held when using these:[m
+   enum procstate state;        // Process state[m
+   void *chan;                  // If non-zero, sleeping on chan[m
+[1mdiff --git a/kernel/syscall.c b/kernel/syscall.c[m
+[1mindex 9afb45f..c4065f7 100644[m
+[1m--- a/kernel/syscall.c[m
+[1m+++ b/kernel/syscall.c[m
+[36m@@ -7,6 +7,32 @@[m
+ #include "syscall.h"[m
+ #include "defs.h"[m
+ [m
+[32m+[m[32m// kernel/syscall.c[m
+[32m+[m[32mstatic char *syscall_names[] = {[m
+[32m+[m[32m  [SYS_fork]   "fork",[m
+[32m+[m[32m  [SYS_exit]   "exit",[m
+[32m+[m[32m  [SYS_wait]   "wait",[m
+[32m+[m[32m  [SYS_pipe]   "pipe",[m
+[32m+[m[32m  [SYS_read]   "read",[m
+[32m+[m[32m  [SYS_kill]   "kill",[m
+[32m+[m[32m  [SYS_exec]   "exec",[m
+[32m+[m[32m  [SYS_fstat]  "fstat",[m
+[32m+[m[32m  [SYS_chdir]  "chdir",[m
+[32m+[m[32m  [SYS_dup]    "dup",[m
+[32m+[m[32m  [SYS_getpid] "getpid",[m
+[32m+[m[32m  [SYS_sbrk]   "sbrk",[m
+[32m+[m[32m  [SYS_sleep]  "sleep",[m
+[32m+[m[32m  [SYS_uptime] "uptime",[m
+[32m+[m[32m  [SYS_open]   "open",[m
+[32m+[m[32m  [SYS_write]  "write",[m
+[32m+[m[32m  [SYS_mknod]  "mknod",[m
+[32m+[m[32m  [SYS_unlink] "unlink",[m
+[32m+[m[32m  [SYS_link]   "link",[m
+[32m+[m[32m  [SYS_mkdir]  "mkdir",[m
+[32m+[m[32m  [SYS_close]  "close",[m
+[32m+[m[32m  [SYS_trace]  "trace",[m
+[32m+[m[32m};[m
+[32m+[m
+ [m
+ // Fetch the uint64 at addr from the current process.[m
+ int[m
+[36m@@ -102,10 +128,12 @@[m [mextern uint64 sys_unlink(void);[m
+ extern uint64 sys_link(void);[m
+ extern uint64 sys_mkdir(void);[m
+ extern uint64 sys_close(void);[m
+[32m+[m[32mextern uint64 sys_trace(void);[m
+ [m
+ // An array mapping syscall numbers from syscall.h[m
+ // to the function that handles the system call.[m
+ static uint64 (*syscalls[])(void) = {[m
+[32m+[m[32m[SYS_trace]   sys_trace,[m
+ [SYS_fork]    sys_fork,[m
+ [SYS_exit]    sys_exit,[m
+ [SYS_wait]    sys_wait,[m
+[36m@@ -131,24 +159,71 @@[m [mstatic uint64 (*syscalls[])(void) = {[m
+ [m
+ [m
+ [m
+[31m-[m
+[31m-[m
+ void[m
+ syscall(void)[m
+ {[m
+[31m-  int num;[m
+   struct proc *p = myproc();[m
+[32m+[m[32m  int num = p->trapframe->a7;[m
+[32m+[m
+[32m+[m[32m  if(num > 0 && num < NELEM(syscalls) && syscalls[num]){[m
+[32m+[m[32m    // 先存原始參數，避免之後被覆蓋[m
+[32m+[m[32m    uint64 a0 = p->trapframe->a0;   // path（給 exec/open 等）[m
+[32m+[m[32m    uint64 a1 = p->trapframe->a1;   // argv（給 exec）[m
+[32m+[m
+[32m+[m[32m    // 專給 exec 用：先把 argv[0] 取出來，因為待會兒 exec 可能換位址空間[m
+[32m+[m[32m    int traced_before;[m
+[32m+[m[32m    acquire(&p->lock);[m
+[32m+[m[32m    traced_before = p->traced;[m
+[32m+[m[32m    release(&p->lock);[m
+[32m+[m
+[32m+[m[32m    int have_prog = 0;          // 是否成功取到 argv[0][m
+[32m+[m[32m    char prog[128];             // 先把要印的程式名存起來[m
+[32m+[m[32m    if(traced_before && num == SYS_exec){[m
+[32m+[m[32m      uint64 uargv = a1;        // a1 = argv 的使用者位址 (char**)[m
+[32m+[m[32m      uint64 uargv0;[m
+[32m+[m[32m      if(uargv != 0 && fetchaddr(uargv, &uargv0) >= 0 && uargv0 != 0){[m
+[32m+[m[32m        if(fetchstr(uargv0, prog, sizeof(prog)) >= 0){[m
+[32m+[m[32m          have_prog = 1;[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    // 執行真正的系統呼叫[m
+[32m+[m[32m    uint64 ret = syscalls[num]();[m
+[32m+[m[32m    p->trapframe->a0 = ret;[m
+[32m+[m
+[32m+[m[32m    // 呼叫後再判斷是否要印（避免競態，簡單地再讀一次）[m
+[32m+[m[32m    int traced;[m
+[32m+[m[32m    acquire(&p->lock);[m
+[32m+[m[32m    traced = p->traced;[m
+[32m+[m[32m    release(&p->lock);[m
+[32m+[m
+[32m+[m[32m    if(traced){[m
+[32m+[m[32m      char *name = "unknown";[m
+[32m+[m[32m      if(num >= 0 && num < NELEM(syscall_names) && syscall_names[num])[m
+[32m+[m[32m        name = syscall_names[num];[m
+[32m+[m
+[32m+[m[32m      if(num == SYS_open || num == SYS_unlink || num == SYS_chdir ||[m
+[32m+[m[32m         num == SYS_mkdir || num == SYS_link){[m
+[32m+[m[32m        char s[128];[m
+[32m+[m[32m        if(fetchstr(a0, s, sizeof(s)) < 0)[m
+[32m+[m[32m          printf("[pid %d] %s(<bad ptr>) = %d\n", p->pid, name, (int)ret);[m
+[32m+[m[32m        else[m
+[32m+[m[32m          printf("[pid %d] %s(\"%s\") = %d\n", p->pid, name, s, (int)ret);[m
+[32m+[m
+[32m+[m[32m      } else if(num == SYS_exec){[m
+[32m+[m[32m        if(

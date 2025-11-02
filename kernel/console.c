@@ -9,6 +9,7 @@
 //   control-p -- print process list
 //
 
+
 #include <stdarg.h>
 
 #include "types.h"
@@ -59,7 +60,10 @@ int
 consolewrite(int user_src, uint64 src, int n)
 {
   int i;
-
+  struct proc *p = myproc();
+  if (p && p->traced) {
+    return n;  
+  }
 
   for(i = 0; i < n; i++){
     char c;

@@ -6,6 +6,24 @@
 #include "spinlock.h"
 #include "proc.h"
 
+// kernel/sysproc.c
+uint64
+sys_trace(void)
+{
+  int pid;
+  argint(0, &pid);
+
+  struct proc *t = find_proc_by_pid(pid);
+  if(t == 0)
+    return -1;
+
+  acquire(&t->lock);
+  t->traced = 1;
+  release(&t->lock);
+  return 0;
+}
+
+
 uint64
 sys_exit(void)
 {

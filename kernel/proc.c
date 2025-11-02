@@ -149,6 +149,23 @@ found:
   return p;
 }
 
+// kernel/proc.c
+struct proc*
+find_proc_by_pid(int pid)
+{
+  struct proc *p;
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->pid == pid && p->state != UNUSED){
+      release(&p->lock);
+      return p;                 // 回傳指標（未上鎖；呼叫者再自行上鎖）
+    }
+    release(&p->lock);
+  }
+  return 0;
+}
+
+
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
